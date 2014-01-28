@@ -97,7 +97,7 @@ Capture::Capture ( const Parameters &hp, std::string captureName )
 			std::string imgformat = hp.readStringParameter ( captureName + ".imageFormat" );
 			for ( ; dirItr != endItr; ++dirItr )
 			{
-				std::string fileName = dirItr->path().filename();
+				std::string fileName = dirItr->path().filename().string();
 				if ( fileName.find ( imgformat ) != fileName.npos )
 				{
 					m_imageSequence.push_back ( fileName );
