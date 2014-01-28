@@ -38,8 +38,166 @@ inline Rect squarify(Rect object, double searchFactor);
 Rect getBoundingBox(Mat& backproject);
 void makeBinarySegmentation(Mat& backproject);
 
+#include "vot.hpp"
+
+void run_challenge() {
+	Mat frame, frameGrey;
+	//load region, images and prepare for output
+	VOT vot_io("region.txt", "images.txt", "output.txt");
+	Rect object = vot_io.getInitRectangle();
+	vot_io.getNextImage(frame);
+	//output init also bbox
+	vot_io.outputBoundingBox(object);
+
+	float maxScale = 1.0;
+	float backProjectRadius = 0.5;
+	float backProjectminProb = 0.5;
+
+	Rect max_object;
+	Size imgSize = Size(frame.cols, frame.rows);
+	int baseSize = 12;
+	Rect imgRect = Rect(baseSize/2, baseSize/2, imgSize.width-baseSize, imgSize.height-baseSize);
+	std::vector<Rect> trackedPositions;
+	
+	Features ft;
+	ft.setImage(frame);
+	Mat result(imgSize.height, imgSize.width, CV_32FC1, Scalar(0.0f));
+
+	Mat backproject( imgSize.height, imgSize.width, CV_8UC1, Scalar(GC_BGD) );
+	rectangle(backproject, cvPoint(object.x-10, object.y-10), cvPoint(object.x+object.width+10, object.y+object.height+10), Scalar(GC_PR_BGD), -1);
+	rectangle(backproject, cvPoint(object.x, object.y), cvPoint(object.x+object.width, object.y+object.height), Scalar(GC_FGD), -1);
+
+	Ferns ferns(20, Size(baseSize, baseSize), 8, ft.getNumChannels());
+	
+	max_object = intersect( imgRect, squarify(object, maxScale));
+	double minVal, maxVal = 6.0f;
+	Point minLoc, maxLoc;
+	Point translation;
+	Point center = getCenter(object);
+	maxLoc = center;
+
+	std::cout << " INITIAL POSITION: " << object.x << "/" << object.y << " " << object.width << "x" << object.height << std::endl;
+
+	Rect updateRegion = intersect(max_object + Size(40,40) - Point(20,20), imgRect);
+
+	std::cout << " UPDATE Ferns initially: ";
+	update(ferns, ft, updateRegion, object, center, backproject);
+	trackedPositions.push_back(object);
+
+	int frameNr = 0;
+	Rect searchWindow = max_object + Size(SEARCH_WINDOW,SEARCH_WINDOW) - Point(SEARCH_WINDOW/2,SEARCH_WINDOW/2);
+	
+	clock_t ft_clocks = 0;
+	clock_t det_clocks = 0;
+	clock_t bp_clocks = 0;
+	clock_t seg_clocks = 0;
+	clock_t up_clocks = 0;
+	
+	clock_t clocks_start;
+
+	std::cout << " START TRACKING" << std::endl;
+	
+	while (vot_io.getNextImage(frame) == 1){
+		std::cout << std::endl << "-- LOAD FRAME [" << frameNr << "] ------------------------------------------" << std::endl;
+
+		clocks_start = clock();
+		ft.setImage(frame);
+		ft_clocks += (clock() - clocks_start);
+		result = Scalar(0.0);
+
+		std::cout << " EVALUATE" << std::endl;
+
+		clocks_start = clock();
+		ferns.evaluate(ft, intersect(searchWindow, imgRect), result, STEP_WIDTH, 0.5f);
+		det_clocks += (clock() - clocks_start);
+		
+		imshow("Result", result);
+		Mat out = result;
+		normalize(out, out, 255, 0, NORM_MINMAX);
+		
+		minMaxLoc(result, &minVal, &maxVal, &minLoc, &maxLoc);
+		std::cout << " LOCATE: maximum is at (" << maxLoc.x << "/" << maxLoc.y << ": " << maxVal << " )" << std::endl;
+
+		if(maxVal < 3.0f)
+		{
+			trackedPositions.push_back(object);
+			continue;
+		}
+
+		translation = Point(maxLoc.x - center.x, maxLoc.y - center.y);
+		center = Point(maxLoc.x, maxLoc.y);
+
+		setCenter(max_object, center);
+		setCenter(object, center);
+		
+		setCenter(searchWindow, center);
+		
+		std::cout << " BACKPROJECT" << std::endl;
+
+		backproject = Scalar(GC_BGD);
+		rectangle(backproject, cvPoint(max_object.x, max_object.y), cvPoint(max_object.x+max_object.width, max_object.y+max_object.height), Scalar(GC_PR_BGD), -1);
+
+		clocks_start = clock();
+		int cnt = ferns.backProject(ft, backproject, intersect( max_object, imgRect), maxLoc, backProjectRadius, STEP_WIDTH, backProjectminProb);
+		bp_clocks += (clock() - clocks_start);
+
+		if(cnt > 0)
+		{
+			std::cout << " SEGMENT" << std::endl;
+			Mat subframe(frame, intersect( searchWindow, imgRect));
+			Mat subbackproject(backproject, intersect( searchWindow, imgRect));
+			clocks_start = clock();
+			Mat fgmdl, bgmdl;
+			grabCut(subframe, subbackproject, object, fgmdl, bgmdl, GRABCUT_ROUNDS, GC_INIT_WITH_MASK);
+			seg_clocks += (clock() - clocks_start);
+		
+			std::cout << " UPDATE: ";
+
+#ifdef SHIFT_TO_CENTER
+			center = centerOfMass(backproject);
+			setCenter(object, center );
+			setCenter(max_object, center);
+			setCenter(searchWindow, center);
+#endif
+		}
+		trackedPositions.push_back(getBoundingBox(backproject));
+
+		Rect bb_backproject = getBoundingBox(backproject);
+		vot_io.outputBoundingBox(bb_backproject);
+
+		if(cnt > 0)
+		{
+			updateRegion = intersect(max_object + Size(40,40) - Point(20,20), imgRect);
+			clocks_start = clock();
+			update(ferns, ft, updateRegion, max_object, center, backproject);
+			up_clocks += (clock() - clocks_start);
+		}
+		
+	}
+	
+	std::cout << std::endl << "-- AVERAGE TIMINGS ------------------------------------------" << std::endl;
+	std::cout << "feature calculation: " << (((double)ft_clocks) / CLOCKS_PER_SEC / frameNr) << std::endl;
+	std::cout << "detection: " << (((double)det_clocks) / CLOCKS_PER_SEC / frameNr) << std::endl;
+	std::cout << "backprojection: " << (((double)bp_clocks) / CLOCKS_PER_SEC / frameNr) << std::endl;
+	std::cout << "segmentation: " << (((double)seg_clocks) / CLOCKS_PER_SEC / frameNr) << std::endl;
+	std::cout << "update: " << (((double)up_clocks) / CLOCKS_PER_SEC / frameNr) << std::endl << std::endl;
+}
+
 int main ( int argc, char** argv )
 {
+
+	//Check for challenge mode
+	for (int i=1; i < argc; i++) {
+		if (strcmp(argv[i], "--challenge") == 0) {
+			//Enter challenge mode
+			run_challenge();
+			//End process
+			return 0;
+		}
+
+	}
+
+
 	if ( argc < 2 )
 	{
 		std::cout << "Usage: ./demo <configfilename>" << std::endl;
