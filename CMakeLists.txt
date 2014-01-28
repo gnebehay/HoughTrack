@@ -17,10 +17,10 @@ project (HoughTracker)
 # Change to configure for your system / preferences
 # -------------------------------------------------------------------- #
 
-	SET( CMAKE_BUILD_TYPE Release ) 					# set to [Release|Debug] to switch optimization flags
+	FIND_PACKAGE( OpenCV REQUIRED )
 
-	SET( OPENCV_LIB /usr/local/lib ) 					# set OpenCV library dir (default: /usr/local/lib)
-	SET( OPENCV_INCLUDE /usr/local/include/opencv ) 	# set OpenCV include dir (default: /usr/local/include)
+
+	SET( CMAKE_BUILD_TYPE Release ) 					# set to [Release|Debug] to switch optimization flags
 	SET( BOOST_LIB /usr/lib ) 							# set Boost library dir (default: /usr/lib)
 	SET( BOOST_INCLUDE /usr/include/boost ) 			# set Boost include dir (default: /usr/include)
 
@@ -66,11 +66,9 @@ project (HoughTracker)
 
 	TARGET_LINK_LIBRARIES (
 		${APPLICATION_NAME}
-		cv
-		cvaux
-		cxcore
-		highgui
+		${OpenCV_LIBS}
 		config++
 		boost_filesystem 		# Lookup the correct library name if this does not work!
+		boost_system
 	)
 
